@@ -1,157 +1,175 @@
-import { useState } from 'react'
-import { MapPin, Search, X } from 'lucide-react'
-import { C, FONT_BODY } from '../constants'
-
-const REST_KEY = 'a9601b8d1e1cd7a7118b0798ae1b27117'
+import { useEffect, useRef, useState } from 'react'
+import { MapPin, Search } from 'lucide-react'
+import { C, FONT_BODY, KAKAO_JS_KEY } from '../constants'
 
 export default function KakaoMap({ onSelect, selectedAddress }) {
-  const [input, setInput]     = useState('')
-  const [results, setResults] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError]     = useState('')
+  const mapRef    = useRef(null)
+  const mapObj    = useRef(null)
+  const markerObj = useRef(null)
+  const geocoder  = useRef(null)
+  const [ready, setReady]       = useState(false)
+  const [input, setInput]       = useState('')
+  const [locating, setLocating] = useState(false)
+  const [error, setError]       = useState('')
 
-  async function search() {
-    if (!input.trim()) return
-    setLoading(true); setError(''); setResults([])
-    try {
-      // 키워드 검색 (장소명, 도로명 주소 모두 검색)
-      const res = await fetch(
-        `https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(input)}&size=5`,
-        { headers: { Authorization: `KakaoAK ${REST_KEY}` } }
-      )
-      const data = await res.json()
-      if (data.documents?.length > 0) {
-        setResults(data.documents)
-      } else {
-        // 키워드 안되면 주소 검색
-        const res2 = await fetch(
-          `https://dapi.kakao.com/v2/local/search/address.json?query=${encodeURIComponent(input)}&size=5`,
-          { headers: { Authorization: `KakaoAK ${REST_KEY}` } }
-        )
-        const data2 = await res2.json()
-        if (data2.documents?.length > 0) {
-          setResults(data2.documents.map(d => ({
-            place_name: d.address_name,
-            road_address_name: d.road_address?.address_name || '',
-            address_name: d.address_name,
-            x: d.x, y: d.y,
-          })))
-        } else {
-          setError('검색 결과가 없어요. 다르게 입력해보세요.')
-        }
+  useEffect(() => {
+    function init() {
+      if (!mapRef.current || mapObj.current) return
+      try {
+        const center = new window.kakao.maps.LatLng(37.5665, 126.9780)
+        const map    = new window.kakao.maps.Map(mapRef.current, { center, level: 5 })
+        const marker = new window.kakao.maps.Marker({ position: center, map })
+        const gc     = new window.kakao.maps.services.Geocoder()
+        mapObj.current    = map
+        markerObj.current = marker
+        geocoder.current  = gc
+
+        window.kakao.maps.event.addListener(map, 'click', e => {
+          const ll = e.latLng
+          marker.setPosition(ll)
+          gc.coord2Address(ll.getLng(), ll.getLat(), (res, st) => {
+            if (st === window.kakao.maps.services.Status.OK) {
+              const addr = res[0].road_address?.address_name || res[0].address.address_name
+              onSelect({ address: addr, lat: ll.getLat(), lng: ll.getLng() })
+              setInput(addr)
+            }
+          })
+        })
+
+        marker.on && marker.on('dragend', () => {
+          const ll = marker.getLatLng ? marker.getLatLng() : marker.getPosition()
+          gc.coord2Address(ll.getLng(), ll.getLat(), (res, st) => {
+            if (st === window.kakao.maps.services.Status.OK) {
+              const addr = res[0].road_address?.address_name || res[0].address.address_name
+              onSelect({ address: addr, lat: ll.getLat(), lng: ll.getLng() })
+              setInput(addr)
+            }
+          })
+        })
+
+        setReady(true)
+        setError('')
+      } catch(e) {
+        setError('지도 초기화 오류: ' + e.message)
       }
-    } catch(e) {
-      setError('검색 오류가 발생했어요.')
-    } finally {
-      setLoading(false)
     }
+
+    if (window.kakao?.maps?.services) { init(); return }
+
+    const existing = document.querySelector('script[data-kakao-map]')
+    if (existing) {
+      if (window.kakao?.maps) window.kakao.maps.load(init)
+      else existing.addEventListener('load', () => window.kakao.maps.load(init))
+      return
+    }
+
+    const s = document.createElement('script')
+    s.setAttribute('data-kakao-map', 'true')
+    s.src = `//dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_JS_KEY}&libraries=services&autoload=false`
+    s.onload  = () => window.kakao.maps.load(init)
+    s.onerror = () => setError('카카오맵 로드 실패. 도메인 설정을 확인해주세요.')
+    document.head.appendChild(s)
+  }, [])
+
+  function searchAndMove() {
+    if (!input.trim() || !geocoder.current) return
+    const ps = new window.kakao.maps.services.Places()
+    ps.keywordSearch(input, (res, st) => {
+      if (st === window.kakao.maps.services.Status.OK) {
+        const { y: lat, x: lng, road_address_name, address_name, place_name } = res[0]
+        const ll = new window.kakao.maps.LatLng(lat, lng)
+        mapObj.current.setCenter(ll)
+        mapObj.current.setLevel(4)
+        markerObj.current.setPosition(ll)
+        const addr = road_address_name || address_name || place_name
+        onSelect({ address: addr, lat: parseFloat(lat), lng: parseFloat(lng) })
+        setInput(addr)
+      } else {
+        geocoder.current.addressSearch(input, (res2, st2) => {
+          if (st2 === window.kakao.maps.services.Status.OK) {
+            const { y: lat, x: lng, address_name } = res2[0]
+            const ll = new window.kakao.maps.LatLng(lat, lng)
+            mapObj.current.setCenter(ll)
+            mapObj.current.setLevel(4)
+            markerObj.current.setPosition(ll)
+            onSelect({ address: address_name, lat: parseFloat(lat), lng: parseFloat(lng) })
+            setInput(address_name)
+          } else {
+            alert('주소를 찾을 수 없어요.')
+          }
+        })
+      }
+    })
   }
 
-  function select(doc) {
-    const address = doc.road_address_name || doc.address_name || doc.place_name
-    onSelect({ address, lat: parseFloat(doc.y), lng: parseFloat(doc.x) })
-    setResults([])
-    setInput(address)
-  }
-
-  function useDirectInput() {
-    if (!input.trim()) return
-    onSelect({ address: input, lat: 0, lng: 0 })
-    setResults([])
+  function getCurrentLocation() {
+    setLocating(true)
+    navigator.geolocation.getCurrentPosition(pos => {
+      const { latitude: lat, longitude: lng } = pos.coords
+      const ll = new window.kakao.maps.LatLng(lat, lng)
+      mapObj.current?.setCenter(ll)
+      mapObj.current?.setLevel(4)
+      markerObj.current?.setPosition(ll)
+      geocoder.current?.coord2Address(lng, lat, (res, st) => {
+        if (st === window.kakao.maps.services.Status.OK) {
+          const addr = res[0].road_address?.address_name || res[0].address.address_name
+          onSelect({ address: addr, lat, lng })
+          setInput(addr)
+        }
+        setLocating(false)
+      })
+    }, () => { alert('위치 권한을 허용해주세요.'); setLocating(false) })
   }
 
   return (
     <div>
-      {/* 검색창 */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-        <div style={{ flex: 1, position: 'relative' }}>
-          <input
-            value={input}
-            onChange={e => { setInput(e.target.value); setResults([]); setError('') }}
-            onKeyDown={e => e.key === 'Enter' && search()}
-            placeholder="예: 마포구 망원동, 스타벅스 홍대점"
-            style={{
-              width: '100%', padding: '11px 36px 11px 12px',
-              borderRadius: 7, border: `1px solid ${C.line}`,
-              fontSize: 13.5, fontFamily: FONT_BODY,
-              background: C.panel, color: C.ink, boxSizing: 'border-box',
-            }}
-          />
-          {input && (
-            <button onClick={() => { setInput(''); setResults([]); setError('') }} style={{
-              position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
-              background: 'none', border: 'none', cursor: 'pointer', padding: 2,
-            }}>
-              <X size={14} color="#A39C8B" />
-            </button>
-          )}
-        </div>
-        <button onClick={search} style={{
+        <input
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && searchAndMove()}
+          placeholder="주소 또는 장소명 검색"
+          style={{
+            flex: 1, padding: '11px 12px', borderRadius: 7,
+            border: `1px solid ${C.line}`, fontSize: 13.5,
+            fontFamily: FONT_BODY, background: C.panel, color: C.ink,
+          }}
+        />
+        <button onClick={searchAndMove} disabled={!ready} style={{
           padding: '11px 16px', borderRadius: 7, border: 'none',
-          background: C.deep, color: '#fff', cursor: 'pointer', flexShrink: 0,
+          background: ready ? C.deep : C.line, color: '#fff',
+          cursor: ready ? 'pointer' : 'not-allowed', flexShrink: 0,
         }}>
-          {loading ? '...' : <Search size={16} />}
+          <Search size={16} />
         </button>
       </div>
 
-      {/* 오류 */}
       {error && (
-        <div style={{ fontSize: 12.5, color: C.terra, marginBottom: 8, padding: '8px 12px', background: '#FBE4DA', borderRadius: 7 }}>
-          {error}
+        <div style={{ padding: '10px 12px', background: '#FBE4DA', color: C.terra, borderRadius: 7, fontSize: 12.5, marginBottom: 8 }}>
+          ⚠️ {error}
         </div>
       )}
 
-      {/* 검색 결과 */}
-      {results.length > 0 && (
-        <div style={{ border: `1px solid ${C.line}`, borderRadius: 8, overflow: 'hidden', marginBottom: 8, background: C.panel }}>
-          {results.map((doc, i) => (
-            <div key={i} onClick={() => select(doc)} style={{
-              padding: '12px 14px', cursor: 'pointer',
-              borderBottom: i < results.length - 1 ? `1px solid ${C.faint}` : 'none',
-              transition: 'background 0.1s',
-            }}
-              onMouseEnter={e => e.currentTarget.style.background = C.faint}
-              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-            >
-              <div style={{ fontSize: 13.5, fontWeight: 600, color: C.ink }}>{doc.place_name}</div>
-              {doc.road_address_name && (
-                <div style={{ fontSize: 11.5, color: '#80796A', marginTop: 2 }}>{doc.road_address_name}</div>
-              )}
-              {!doc.road_address_name && doc.address_name && (
-                <div style={{ fontSize: 11.5, color: '#80796A', marginTop: 2 }}>{doc.address_name}</div>
-              )}
-            </div>
-          ))}
-          {/* 직접 입력 옵션 */}
-          <div onClick={useDirectInput} style={{
-            padding: '10px 14px', cursor: 'pointer',
-            background: C.faint, fontSize: 12.5, color: '#80796A',
-            display: 'flex', alignItems: 'center', gap: 6,
-          }}>
-            <MapPin size={12} color={C.terra} />
-            "{input}" 주소로 직접 사용
-          </div>
-        </div>
+      <div ref={mapRef} style={{ width: '100%', height: 220, borderRadius: 8, border: `1px solid ${C.line}`, overflow: 'hidden', background: C.faint }} />
+
+      {!ready && !error && (
+        <div style={{ textAlign: 'center', fontSize: 12, color: '#A39C8B', marginTop: 6 }}>지도 로딩중...</div>
       )}
 
-      {/* 선택된 주소 표시 */}
+      <button onClick={getCurrentLocation} disabled={!ready || locating} style={{
+        width: '100%', marginTop: 8, padding: '10px 0', borderRadius: 7,
+        border: `1px solid ${C.line}`, background: C.panel,
+        color: C.ink, fontSize: 13, fontFamily: FONT_BODY,
+        cursor: ready ? 'pointer' : 'not-allowed',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+      }}>
+        <MapPin size={14} color={C.terra} />
+        {locating ? '위치 찾는 중...' : '현재 위치 사용'}
+      </button>
+
       {selectedAddress && (
-        <div style={{
-          padding: '12px 14px', background: '#E8F5E9',
-          borderRadius: 8, fontSize: 13.5, color: C.ink,
-          display: 'flex', alignItems: 'center', gap: 8,
-          border: `1px solid #A5D6A7`,
-        }}>
-          <MapPin size={16} color={C.terra} />
-          <span>{selectedAddress}</span>
-        </div>
-      )}
-
-      {/* 안내 */}
-      {!selectedAddress && results.length === 0 && !error && (
-        <div style={{ padding: '16px', background: C.faint, borderRadius: 8, fontSize: 12.5, color: '#80796A', lineHeight: 1.6 }}>
-          💡 주소나 장소명을 검색해서 선택하거나<br />
-          주소를 직접 입력 후 엔터를 눌러주세요.
+        <div style={{ marginTop: 8, padding: '10px 12px', background: '#E8F5E9', borderRadius: 7, fontSize: 12.5, color: '#2E7D32', border: '1px solid #A5D6A7' }}>
+          📍 {selectedAddress}
         </div>
       )}
     </div>
